@@ -43,6 +43,7 @@ StringRef Triple::getArchTypeName(ArchType Kind) {
   case hsail64:        return "hsail64";
   case hsail:          return "hsail";
   case kalimba:        return "kalimba";
+  case i8051:          return "i8051";
   case lanai:          return "lanai";
   case loongarch32:    return "loongarch32";
   case loongarch64:    return "loongarch64";
@@ -911,6 +912,7 @@ static Triple::ObjectFormatType getDefaultFormat(const Triple &T) {
   case Triple::hexagon:
   case Triple::hsail64:
   case Triple::hsail:
+  case Triple::i8051:
   case Triple::kalimba:
   case Triple::lanai:
   case Triple::loongarch32:
@@ -1595,6 +1597,7 @@ unsigned Triple::getArchPointerBitWidth(llvm::Triple::ArchType Arch) {
     return 0;
 
   case llvm::Triple::avr:
+  case llvm::Triple::i8051:
   case llvm::Triple::msp430:
     return 16;
 
@@ -1682,6 +1685,7 @@ Triple Triple::get32BitArchVariant() const {
   case Triple::avr:
   case Triple::bpfeb:
   case Triple::bpfel:
+  case Triple::i8051:
   case Triple::msp430:
   case Triple::systemz:
   case Triple::ve:
@@ -1762,6 +1766,7 @@ Triple Triple::get64BitArchVariant() const {
   case Triple::csky:
   case Triple::dxil:
   case Triple::hexagon:
+  case Triple::i8051:
   case Triple::kalimba:
   case Triple::lanai:
   case Triple::m68k:

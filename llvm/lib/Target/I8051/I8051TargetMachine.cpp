@@ -17,6 +17,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 
+#include "I8051TargetObjectFile.h"
 #include "TargetInfo/I8051TargetInfo.h"
 
 #include <optional>
@@ -38,7 +39,9 @@ I8051TargetMachine::I8051TargetMachine(const Target &T, const Triple &TT,
                                    CodeGenOptLevel OL, bool JIT)
     : LLVMTargetMachine(T, I8051DataLayout, TT, CPU, FS, Options,
                         getEffectiveRelocModel(RM),
-                        getEffectiveCodeModel(CM, CodeModel::Small), OL) {
+                        getEffectiveCodeModel(CM, CodeModel::Small), OL),
+      SubTarget(TT, std::string(CPU), std::string(FS), *this) {
+  this->TLOF = std::make_unique<I8051TargetObjectFile>();
   initAsmInfo();
 }
 
@@ -73,6 +76,14 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeI8051Target() {
   RegisterTargetMachine<I8051TargetMachine> X(getTheI8051Target());
 
   auto &PR = *PassRegistry::getPassRegistry();
+}
+
+const I8051Subtarget *I8051TargetMachine::getSubtargetImpl() const {
+  return &SubTarget;
+}
+
+const I8051Subtarget *I8051TargetMachine::getSubtargetImpl(const Function &) const {
+  return &SubTarget;
 }
 
 MachineFunctionInfo *I8051TargetMachine::createMachineFunctionInfo(

@@ -16,6 +16,8 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include "I8051Subtarget.h"
+
 #include <optional>
 
 namespace llvm {
@@ -28,6 +30,13 @@ public:
                    std::optional<Reloc::Model> RM,
                    std::optional<CodeModel::Model> CM, CodeGenOptLevel OL, bool JIT = false);
 
+  const I8051Subtarget *getSubtargetImpl() const;
+  const I8051Subtarget *getSubtargetImpl(const Function &) const override;
+
+  TargetLoweringObjectFile *getObjFileLowering() const override {
+    return this->TLOF.get();
+  }
+
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
 
   MachineFunctionInfo *
@@ -35,6 +44,8 @@ public:
                             const TargetSubtargetInfo *STI) const override;
 
 private:
+  std::unique_ptr<TargetLoweringObjectFile> TLOF;
+  I8051Subtarget SubTarget;
 };
 
 } // end namespace llvm

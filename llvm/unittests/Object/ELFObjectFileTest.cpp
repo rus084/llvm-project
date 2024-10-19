@@ -239,6 +239,13 @@ TEST(ELFObjectFileTest, MachineTestForAVR) {
     checkFormatAndArch(Data, Formats[Idx], Triple::avr);
 }
 
+TEST(ELFObjectFileTest, MachineTestForI8051) {
+  std::array<StringRef, 4> Formats = {"elf32-i8051", "elf32-i8051", "elf64-unknown",
+                                      "elf64-unknown"};
+  for (auto [Idx, Data] : enumerate(generateData(ELF::EM_8051)))
+    checkFormatAndArch(Data, Formats[Idx], Triple::i8051);
+}
+
 TEST(ELFObjectFileTest, MachineTestForHEXAGON) {
   std::array<StringRef, 4> Formats = {"elf32-hexagon", "elf32-hexagon",
                                       "elf64-unknown", "elf64-unknown"};

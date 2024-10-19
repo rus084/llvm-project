@@ -184,6 +184,7 @@ void setAMDGPUTargetInfo(Ctx &);
 void setARMTargetInfo(Ctx &);
 void setAVRTargetInfo(Ctx &);
 void setHexagonTargetInfo(Ctx &);
+void setI8051TargetInfo(Ctx &);
 void setLoongArchTargetInfo(Ctx &);
 void setMSP430TargetInfo(Ctx &);
 void setMipsTargetInfo(Ctx &);

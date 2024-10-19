@@ -82,6 +82,13 @@ StringRef llvm::object::getELFRelocationTypeName(uint32_t Machine,
       break;
     }
     break;
+  case ELF::EM_8051:
+    switch (Type) {
+#include "llvm/BinaryFormat/ELFRelocs/I8051.def"
+    default:
+      break;
+    }
+    break;
   case ELF::EM_HEXAGON:
     switch (Type) {
 #include "llvm/BinaryFormat/ELFRelocs/Hexagon.def"
@@ -207,6 +214,8 @@ uint32_t llvm::object::getELFRelativeRelocationType(uint32_t Machine) {
   case ELF::EM_ARC_COMPACT2:
     return ELF::R_ARC_RELATIVE;
   case ELF::EM_AVR:
+    break;
+  case ELF::EM_8051:
     break;
   case ELF::EM_HEXAGON:
     return ELF::R_HEX_RELATIVE;

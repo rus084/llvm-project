@@ -197,6 +197,7 @@ uint16_t ELF::convertArchNameToEMachine(StringRef Arch) {
       .Case("ve", EM_VE)
       .Case("csky", EM_CSKY)
       .Case("loongarch", EM_LOONGARCH)
+      .Case("i8051", EM_8051)
       .Default(EM_NONE);
 }
 
@@ -337,6 +338,8 @@ StringRef ELF::convertEMachineToArchName(uint16_t EMachine) {
     return "prism";
   case EM_AVR:
     return "avr";
+  case EM_8051:
+    return "i8051";
   case EM_FR30:
     return "fr30";
   case EM_D10V:
@@ -445,8 +448,6 @@ StringRef ELF::convertEMachineToArchName(uint16_t EMachine) {
     return "trimedia";
   case EM_HEXAGON:
     return "hexagon";
-  case EM_8051:
-    return "8051";
   case EM_STXP7X:
     return "stxp7x";
   case EM_NDS32:

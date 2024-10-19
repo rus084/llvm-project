@@ -419,6 +419,8 @@ static const ArchDefinitionEntry g_elf_arch_entries[] = {
      0xFFFFFFFFu, 0xFFFFFFFFu}, // ARC
     {ArchSpec::eCore_avr, llvm::ELF::EM_AVR, LLDB_INVALID_CPUTYPE, 0xFFFFFFFFu,
      0xFFFFFFFFu}, // AVR
+    {ArchSpec::eCore_i8051, llvm::ELF::EM_8051, LLDB_INVALID_CPUTYPE, 0xFFFFFFFFu,
+     0xFFFFFFFFu}, // I8051
     {ArchSpec::eCore_riscv32, llvm::ELF::EM_RISCV,
      ArchSpec::eRISCVSubType_riscv32, 0xFFFFFFFFu, 0xFFFFFFFFu}, // riscv32
     {ArchSpec::eCore_riscv64, llvm::ELF::EM_RISCV,

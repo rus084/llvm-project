@@ -507,6 +507,19 @@ enum {
 #include "ELFRelocs/AVR.def"
 };
 
+// AVR specific e_flags
+enum : unsigned {
+  EF_I8051_ARCH_MASK = 0x7f, // EF_AVR_ARCH_xxx selection mask
+
+  EF_I8051_LINKRELAX_PREPARED = 0x80, // The file is prepared for linker
+                                    // relaxation to be applied
+};
+
+// ELF Relocation types for AVR
+enum {
+#include "ELFRelocs/I8051.def"
+};
+
 // Mips Specific e_flags
 enum : unsigned {
   EF_MIPS_NOREORDER = 0x00000001, // Don't reorder instructions

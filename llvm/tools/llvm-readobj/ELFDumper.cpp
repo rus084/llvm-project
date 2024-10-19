@@ -1187,6 +1187,7 @@ const EnumEntry<unsigned> ElfMachineType[] = {
   ENUM_ENT(EM_HUANY,         "Harvard Universitys's machine-independent object format"),
   ENUM_ENT(EM_PRISM,         "Vitesse Prism"),
   ENUM_ENT(EM_AVR,           "Atmel AVR 8-bit microcontroller"),
+  ENUM_ENT(EM_8051,          "Intel 8051 8-bit microcontroller"),
   ENUM_ENT(EM_FR30,          "Fujitsu FR30"),
   ENUM_ENT(EM_D10V,          "Mitsubishi D10V"),
   ENUM_ENT(EM_D30V,          "Mitsubishi D30V"),
@@ -1714,6 +1715,10 @@ const EnumEntry<unsigned> ElfHeaderAVRFlags[] = {
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA6),
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA7),
   ENUM_ENT(EF_AVR_LINKRELAX_PREPARED, "relaxable"),
+};
+
+const EnumEntry<unsigned> ElfHeaderI8051Flags[] = {
+  ENUM_ENT(EF_I8051_LINKRELAX_PREPARED, "relaxable"),
 };
 
 const EnumEntry<unsigned> ElfHeaderLoongArchFlags[] = {
@@ -3641,6 +3646,9 @@ template <class ELFT> void GNUELFDumper<ELFT>::printFileHeaders() {
   else if (e.e_machine == EM_AVR)
     ElfFlags = printFlags(e.e_flags, ArrayRef(ElfHeaderAVRFlags),
                           unsigned(ELF::EF_AVR_ARCH_MASK));
+  else if (e.e_machine == EM_8051)
+    ElfFlags = printFlags(e.e_flags, ArrayRef(ElfHeaderI8051Flags),
+                          unsigned(ELF::EF_I8051_ARCH_MASK));
   else if (e.e_machine == EM_LOONGARCH)
     ElfFlags = printFlags(e.e_flags, ArrayRef(ElfHeaderLoongArchFlags),
                           unsigned(ELF::EF_LOONGARCH_ABI_MODIFIER_MASK),
@@ -7142,6 +7150,9 @@ template <class ELFT> void LLVMELFDumper<ELFT>::printFileHeaders() {
     else if (E.e_machine == EM_AVR)
       W.printFlags("Flags", E.e_flags, ArrayRef(ElfHeaderAVRFlags),
                    unsigned(ELF::EF_AVR_ARCH_MASK));
+    else if (E.e_machine == EM_8051)
+      W.printFlags("Flags", E.e_flags, ArrayRef(ElfHeaderI8051Flags),
+                   unsigned(ELF::EF_I8051_ARCH_MASK));
     else if (E.e_machine == EM_LOONGARCH)
       W.printFlags("Flags", E.e_flags, ArrayRef(ElfHeaderLoongArchFlags),
                    unsigned(ELF::EF_LOONGARCH_ABI_MODIFIER_MASK),

@@ -31,6 +31,7 @@ static_library("ELF") {
     "Arch/ARM.cpp",
     "Arch/AVR.cpp",
     "Arch/Hexagon.cpp",
+    "Arch/I8051.cpp",
     "Arch/LoongArch.cpp",
     "Arch/MSP430.cpp",
     "Arch/Mips.cpp",

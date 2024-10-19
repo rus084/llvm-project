@@ -225,6 +225,8 @@ public:
 
     eCore_wasm32,
 
+    eCore_i8051,
+
     kNumCores,
 
     kCore_invalid,

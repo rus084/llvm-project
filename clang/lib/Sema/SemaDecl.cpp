@@ -3254,6 +3254,11 @@ static void diagnoseMissingConstinit(Sema &S, const VarDecl *InitDecl,
 
 void Sema::mergeDeclAttributes(NamedDecl *New, Decl *Old,
                                AvailabilityMergeKind AMK) {
+  if (New->hasAttr<CoroNoAllocAttr>() && !Old->hasAttr<CoroNoAllocAttr>()) {
+    Diag(New->getLocation(), diag::err_coro_noalloc_late_attr);
+    Diag(Old->getLocation(), diag::note_previous_declaration);
+    New->setInvalidDecl();
+  }
   if (UsedAttr *OldAttr = Old->getMostRecentDecl()->getAttr<UsedAttr>()) {
     UsedAttr *NewAttr = OldAttr->clone(Context);
     NewAttr->setInherited(true);
@@ -16729,11 +16734,26 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body, bool IsInstantiation,
 
   // If we skip function body, we can't tell if a function is a coroutine.
   if (getLangOpts().Coroutines && FD && !FD->hasSkippedBody()) {
-    if (FSI->isCoroutine())
+    if (FD->hasAttr<CoroNoAllocAttr>() &&
+        (isa<CXXMethodDecl>(FD) || FD->isTemplated() ||
+         FD->isDependentContext())) {
+      Diag(FD->getLocation(), diag::err_coro_noalloc_unsupported);
+      FD->setInvalidDecl();
+    } else if (FSI->isCoroutine())
       CheckCompletedCoroutineBody(FD, Body);
-    else
+    else {
+      if (FD->hasAttr<CoroNoAllocAttr>()) {
+        Diag(FD->getLocation(), diag::err_coro_noalloc_requires_coroutine);
+        FD->setInvalidDecl();
+      }
       CheckCoroutineWrapper(FD);
+    }
   }
+
+  // Early noalloc layout may run while Sema recovers from unrelated errors.
+  // Never let a diagnosed, partially recovered body enter isolated CodeGen.
+  if (FD && FD->hasAttr<CoroNoAllocAttr>() && FSI->hasErrorOccurred())
+    FD->setInvalidDecl();
 
   // Diagnose invalid SYCL kernel entry point function declarations
   // and build SYCLKernelCallStmts for valid ones.

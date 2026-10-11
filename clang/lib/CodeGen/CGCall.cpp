@@ -554,6 +554,24 @@ CodeGenTypes::arrangeFunctionDeclaration(const GlobalDecl GD) {
                                    RequiredArgs::All);
   }
 
+  if (FD->hasAttr<CoroNoAllocAttr>()) {
+    const auto *FTP = FTy.castAs<FunctionProtoType>().getTypePtr();
+    SmallVector<QualType, 8> Params{
+        Context.VoidPtrTy, Context.getPointerType(Context.BoolTy)};
+    for (QualType Param : FTP->param_types())
+      Params.push_back(Param);
+    auto EPI = FTP->getExtProtoInfo();
+    ExtParameterInfoList Infos;
+    if (FTP->hasExtParameterInfos()) {
+      Infos.resize(2);
+      llvm::append_range(Infos, FTP->getExtParameterInfos());
+      EPI.ExtParameterInfos = Infos.data();
+    }
+    QualType EntryType =
+        Context.getFunctionType(FD->getReturnType(), Params, EPI);
+    return arrangeFreeFunctionType(
+        Context.getCanonicalType(EntryType).castAs<FunctionProtoType>());
+  }
   return arrangeFreeFunctionType(FTy.castAs<FunctionProtoType>());
 }
 

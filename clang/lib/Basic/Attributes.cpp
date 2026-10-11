@@ -249,6 +249,11 @@ unsigned AttributeCommonInfo::calculateAttributeSpellingListIndex() const {
   if (getParsedKind() == AttributeCommonInfo::UnknownAttribute)
     return 0;
 
+  // This extension has a single spelling in its own namespace, so no scope
+  // discriminator is needed for the generated spelling-index lookup.
+  if (getParsedKind() == AttributeCommonInfo::AT_CoroNoAlloc)
+    return 0;
+
   // Both variables will be used in tablegen generated
   // attribute spell list index matching code.
   auto Syntax = static_cast<AttributeCommonInfo::Syntax>(getSyntax());

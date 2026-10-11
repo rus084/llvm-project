@@ -16,6 +16,7 @@
 
 #include "clang/AST/ASTFwd.h"
 #include "clang/AST/CanonicalType.h"
+#include "clang/AST/CoroutineFrameLayout.h"
 #include "clang/AST/CommentCommandTraits.h"
 #include "clang/AST/ComparisonCategories.h"
 #include "clang/AST/Decl.h"
@@ -800,12 +801,20 @@ private:
   clang::PrintingPolicy PrintingPolicy;
   mutable std::unique_ptr<interp::Context> InterpContext;
   std::unique_ptr<ParentMapContext> ParentMapCtx;
+  std::unique_ptr<CoroutineFrameLayoutProvider> CoroutineLayoutProvider;
 
   /// Keeps track of the deallocated DeclListNodes for future reuse.
   DeclListNode *ListNodeFreeList = nullptr;
 
 public:
   IdentifierTable &Idents;
+  CoroutineFrameLayoutProvider *getCoroutineFrameLayoutProvider() const {
+    return CoroutineLayoutProvider.get();
+  }
+  void setCoroutineFrameLayoutProvider(
+      std::unique_ptr<CoroutineFrameLayoutProvider> Provider) {
+    CoroutineLayoutProvider = std::move(Provider);
+  }
   SelectorTable &Selectors;
   Builtin::Context &BuiltinInfo;
   const TranslationUnitKind TUKind;

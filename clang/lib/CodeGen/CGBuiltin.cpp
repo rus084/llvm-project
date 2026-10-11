@@ -2944,6 +2944,21 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
          "Should not codegen for consteval builtins");
 
   const FunctionDecl *FD = GD.getDecl()->getAsFunction();
+  if (BuiltinID == Builtin::BI__builtin_coro_invoke) {
+    auto *Target = cast<FunctionDecl>(
+        E->getArg(0)->getReferencedDeclOfCallee());
+    const CGFunctionInfo &FI = getTypes().arrangeFunctionDeclaration(Target);
+    CallArgList Args;
+    EmitCallArg(Args, E->getArg(1), getContext().VoidPtrTy);
+    EmitCallArg(Args, E->getArg(2),
+                getContext().getPointerType(getContext().BoolTy));
+    for (unsigned I = 0; I != Target->getNumParams(); ++I)
+      EmitCallArg(Args, E->getArg(I + 3), Target->getParamDecl(I)->getType());
+    llvm::Constant *Entry = CGM.GetAddrOfFunction(
+        Target, getTypes().GetFunctionType(FI));
+    return EmitCall(FI, CGCallee::forDirect(Entry, CGCalleeInfo(Target)),
+                    ReturnValue, Args);
+  }
   // See if we can constant fold this builtin.  If so, don't emit it at all.
   // TODO: Extend this handling to all builtin calls that we can constant-fold.
   Expr::EvalResult Result;

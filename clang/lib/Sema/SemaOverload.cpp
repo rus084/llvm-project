@@ -11808,6 +11808,14 @@ static bool checkAddressOfFunctionIsAvailable(Sema &S, const FunctionDecl *FD,
                                               bool Complain,
                                               bool InOverloadResolution,
                                               SourceLocation Loc) {
+  if (FD->hasAttr<CoroNoAllocAttr>() && !S.isUnevaluatedContext() &&
+      S.currentEvaluationContext().ExprContext !=
+          Sema::ExpressionEvaluationContextRecord::EK_TemplateArgument) {
+    if (Complain)
+      S.Diag(InOverloadResolution ? FD->getLocation() : Loc,
+             diag::err_coro_noalloc_direct_call);
+    return false;
+  }
   if (!isFunctionAlwaysEnabled(S.Context, FD)) {
     if (Complain) {
       if (InOverloadResolution)

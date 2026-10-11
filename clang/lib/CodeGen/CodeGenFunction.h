@@ -361,6 +361,8 @@ public:
 
   /// Save Parameter Decl for coroutine.
   llvm::SmallVector<const ParmVarDecl *, 4> FnArgs;
+  ImplicitParamDecl *NoAllocStorageParam = nullptr;
+  ImplicitParamDecl *NoAllocOccupiedParam = nullptr;
 
   // Holds coroutine data if the current function is a coroutine. We use a
   // wrapper to manage its lifetime, so that we don't have to define CGCoroData

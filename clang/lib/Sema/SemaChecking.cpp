@@ -2991,6 +2991,109 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
 
   FPOptions FPO;
   switch (BuiltinID) {
+  case Builtin::BI__builtin_coro_invoke: {
+    if (checkArgCountAtLeast(TheCall, 3))
+      return ExprError();
+    if (TheCall->isTypeDependent() || TheCall->isValueDependent())
+      return TheCall;
+    auto *F = dyn_cast_or_null<FunctionDecl>(
+        TheCall->getArg(0)->getReferencedDeclOfCallee());
+    if (!F || !F->hasAttr<CoroNoAllocAttr>()) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_function);
+      return ExprError();
+    }
+    const FunctionDecl *Definition = F->getDefinition();
+    if (Definition && Definition->isInvalidDecl()) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_error)
+          << "coroutine definition contains errors";
+      return ExprError();
+    }
+    if (!Definition ||
+        !isa_and_nonnull<CoroutineBodyStmt>(Definition->getBody())) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_incomplete);
+      return ExprError();
+    }
+    if (F->isVariadic() || TheCall->getNumArgs() != F->getNumParams() + 3) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_invoke_count);
+      return ExprError();
+    }
+    for (unsigned I = 1; I != TheCall->getNumArgs(); ++I) {
+      QualType Type = I == 1 ? Context.VoidPtrTy
+                      : I == 2 ? Context.getPointerType(Context.BoolTy)
+                               : F->getParamDecl(I - 3)->getType();
+      InitializedEntity Entity =
+          InitializedEntity::InitializeParameter(Context, Type, false);
+      ExprResult Converted = PerformCopyInitialization(
+          Entity, SourceLocation(), TheCall->getArg(I));
+      if (Converted.isInvalid())
+        return ExprError();
+      TheCall->setArg(I, Converted.get());
+    }
+    auto *Provider = Context.getCoroutineFrameLayoutProvider();
+    if (!Provider) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_error)
+          << "coroutine frame layout service is unavailable for this action";
+      return ExprError();
+    }
+    auto Layout = Provider->getLayout(Definition);
+    if (!Layout) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_error)
+          << llvm::toString(Layout.takeError());
+      return ExprError();
+    }
+    QualType ReturnType = F->getReturnType();
+    TheCall->setType(ReturnType.getNonReferenceType());
+    TheCall->setValueKind(Expr::getValueKindForType(ReturnType));
+    TheCall->computeDependence();
+    return MaybeBindToTemporary(TheCall);
+  }
+  case Builtin::BI__builtin_coro_frame_size:
+  case Builtin::BI__builtin_coro_frame_align: {
+    if (checkArgCount(TheCall, 1))
+      return ExprError();
+    if (TheCall->isTypeDependent() || TheCall->isValueDependent())
+      return TheCall;
+    auto *F = dyn_cast_or_null<FunctionDecl>(
+        TheCall->getArg(0)->getReferencedDeclOfCallee());
+    if (!F || !F->hasAttr<CoroNoAllocAttr>()) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_function);
+      return ExprError();
+    }
+    const FunctionDecl *Definition = F->getDefinition();
+    if (Definition && Definition->isInvalidDecl()) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_error)
+          << "coroutine definition contains errors";
+      return ExprError();
+    }
+    if (!Definition ||
+        !isa_and_nonnull<CoroutineBodyStmt>(Definition->getBody())) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_incomplete);
+      return ExprError();
+    }
+    auto *Provider = Context.getCoroutineFrameLayoutProvider();
+    if (!Provider) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_error)
+          << "coroutine frame layout service is unavailable for this action";
+      return ExprError();
+    }
+    auto Layout = Provider->getLayout(Definition);
+    if (!Layout) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_error)
+          << llvm::toString(Layout.takeError());
+      return ExprError();
+    }
+    uint64_t Value = BuiltinID == Builtin::BI__builtin_coro_frame_size
+                         ? Layout->SizeBytes : Layout->AlignBytes;
+    QualType SizeTy = Context.getSizeType();
+    unsigned Width = Context.getTypeSize(SizeTy);
+    if (Width < 64 && Value >= (uint64_t(1) << Width)) {
+      Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_layout_error)
+          << "coroutine frame layout does not fit target size_t";
+      return ExprError();
+    }
+    return IntegerLiteral::Create(Context, llvm::APInt(Width, Value), SizeTy,
+                                  TheCall->getExprLoc());
+  }
   case Builtin::BI__builtin___get_unsafe_stack_start:
   case Builtin::BI__builtin___get_unsafe_stack_bottom:
     Diag(TheCall->getBeginLoc(), diag::warn_deprecated_builtin)
@@ -4665,6 +4768,10 @@ void Sema::CheckConstructorCall(FunctionDecl *FDecl, QualType ThisType,
 
 bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
                              const FunctionProtoType *Proto) {
+  if (FDecl->hasAttr<CoroNoAllocAttr>()) {
+    Diag(TheCall->getExprLoc(), diag::err_coro_noalloc_direct_call);
+    return true;
+  }
   bool IsMemberOperatorCall = isa<CXXOperatorCallExpr>(TheCall) &&
                               isa<CXXMethodDecl>(FDecl);
   bool IsMemberFunction = isa<CXXMemberCallExpr>(TheCall) ||

@@ -1421,6 +1421,19 @@ QualType CodeGenFunction::BuildFunctionArgList(GlobalDecl GD,
   const FunctionDecl *FD = cast<FunctionDecl>(GD.getDecl());
   QualType ResTy = FD->getReturnType();
 
+  if (FD->hasAttr<CoroNoAllocAttr>()) {
+    auto MakeParam = [&](StringRef Name, QualType Type) {
+      return ImplicitParamDecl::Create(
+          getContext(), const_cast<FunctionDecl *>(FD), FD->getLocation(),
+          &getContext().Idents.get(Name), Type, ImplicitParamKind::Other);
+    };
+    NoAllocStorageParam = MakeParam("__coro_storage", getContext().VoidPtrTy);
+    NoAllocOccupiedParam = MakeParam(
+        "__coro_occupied", getContext().getPointerType(getContext().BoolTy));
+    Args.push_back(NoAllocStorageParam);
+    Args.push_back(NoAllocOccupiedParam);
+  }
+
   const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD);
   if (MD && MD->isImplicitObjectMemberFunction()) {
     if (CGM.getCXXABI().HasThisReturn(GD))

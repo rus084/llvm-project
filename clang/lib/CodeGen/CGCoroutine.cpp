@@ -598,6 +598,20 @@ struct CallCoroEnd final : public EHScopeStack::Cleanup {
 }
 
 namespace {
+struct ReleaseNoAllocStorage final : public EHScopeStack::Cleanup {
+  llvm::Value *Occupied;
+  explicit ReleaseNoAllocStorage(llvm::Value *Occupied) : Occupied(Occupied) {}
+
+  void Emit(CodeGenFunction &CGF, Flags) override {
+    QualType BoolTy = CGF.getContext().BoolTy;
+    CGF.EmitStoreOfScalar(
+        CGF.Builder.getFalse(),
+        Address(Occupied, CGF.ConvertTypeForMem(BoolTy),
+                CGF.getContext().getTypeAlignInChars(BoolTy)),
+        /*Volatile=*/false, BoolTy);
+  }
+};
+
 // Make sure to call coro.delete on scope exit.
 struct CallCoroDelete final : public EHScopeStack::Cleanup {
   Stmt *Deallocate;
@@ -906,12 +920,13 @@ static void emitBodyAndFallthrough(CodeGenFunction &CGF,
 }
 
 void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
+  const bool NoAlloc = NoAllocStorageParam != nullptr;
   auto *NullPtr = llvm::ConstantPointerNull::get(Builder.getPtrTy());
   auto &TI = CGM.getContext().getTargetInfo();
   unsigned NewAlign = TI.getNewAlign() / TI.getCharWidth();
 
   auto *EntryBB = Builder.GetInsertBlock();
-  auto *AllocBB = createBasicBlock("coro.alloc");
+  auto *AllocBB = NoAlloc ? nullptr : createBasicBlock("coro.alloc");
   auto *InitBB = createBasicBlock("coro.init");
   auto *FinalBB = createBasicBlock("coro.final");
   auto *CleanupBB = createBasicBlock("coro.cleanup");
@@ -928,50 +943,64 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
   assert(ShouldEmitLifetimeMarkers &&
          "Must emit lifetime intrinsics for coroutines");
 
-  // Backend is allowed to elide memory allocations, to help it, emit
-  // auto mem = coro.alloc() ? 0 : ... allocation code ...;
-  auto *CoroAlloc = Builder.CreateCall(
-      CGM.getIntrinsic(llvm::Intrinsic::coro_alloc), {CoroId});
-
-  Builder.CreateCondBr(CoroAlloc, AllocBB, InitBB);
-
-  EmitBlock(AllocBB);
-  auto *AllocateCall = EmitScalarExpr(S.getAllocate());
-  auto *AllocOrInvokeContBB = Builder.GetInsertBlock();
-
-  // Handle allocation failure if 'ReturnStmtOnAllocFailure' was provided.
-  if (auto *RetOnAllocFailure = S.getReturnStmtOnAllocFailure()) {
-    auto *RetOnFailureBB = createBasicBlock("coro.ret.on.failure");
-
-    // See if allocation was successful.
-    auto *NullPtr = llvm::ConstantPointerNull::get(Int8PtrTy);
-    auto *Cond = Builder.CreateICmpNE(AllocateCall, NullPtr);
-    // Expect the allocation to be successful.
-    emitCondLikelihoodViaExpectIntrinsic(Cond, Stmt::LH_Likely);
-    Builder.CreateCondBr(Cond, InitBB, RetOnFailureBB);
-
-    // If not, return OnAllocFailure object.
-    EmitBlock(RetOnFailureBB);
-    EmitStmt(RetOnAllocFailure);
-  }
-  else {
+  llvm::Value *Storage = nullptr;
+  llvm::Value *Occupied = nullptr;
+  if (NoAlloc) {
+    Storage = EmitLoadOfScalar(GetAddrOfLocalVar(NoAllocStorageParam), false,
+                               NoAllocStorageParam->getType(), SourceLocation());
+    Occupied = EmitLoadOfScalar(GetAddrOfLocalVar(NoAllocOccupiedParam), false,
+                                NoAllocOccupiedParam->getType(), SourceLocation());
     Builder.CreateBr(InitBB);
+    EmitBlock(InitBB);
+  } else {
+    // Backend is allowed to elide memory allocations, to help it, emit
+    // auto mem = coro.alloc() ? 0 : ... allocation code ...;
+    auto *CoroAlloc = Builder.CreateCall(
+        CGM.getIntrinsic(llvm::Intrinsic::coro_alloc), {CoroId});
+
+    Builder.CreateCondBr(CoroAlloc, AllocBB, InitBB);
+
+    EmitBlock(AllocBB);
+    auto *AllocateCall = EmitScalarExpr(S.getAllocate());
+    auto *AllocOrInvokeContBB = Builder.GetInsertBlock();
+
+    // Handle allocation failure if 'ReturnStmtOnAllocFailure' was provided.
+    if (auto *RetOnAllocFailure = S.getReturnStmtOnAllocFailure()) {
+      auto *RetOnFailureBB = createBasicBlock("coro.ret.on.failure");
+
+      // See if allocation was successful.
+      auto *NullPtr = llvm::ConstantPointerNull::get(Int8PtrTy);
+      auto *Cond = Builder.CreateICmpNE(AllocateCall, NullPtr);
+      // Expect the allocation to be successful.
+      emitCondLikelihoodViaExpectIntrinsic(Cond, Stmt::LH_Likely);
+      Builder.CreateCondBr(Cond, InitBB, RetOnFailureBB);
+
+      // If not, return OnAllocFailure object.
+      EmitBlock(RetOnFailureBB);
+      EmitStmt(RetOnAllocFailure);
+    } else {
+      Builder.CreateBr(InitBB);
+    }
+
+    EmitBlock(InitBB);
+
+    // Pass the result of the allocation to coro.begin.
+    auto *Phi = Builder.CreatePHI(VoidPtrTy, 2);
+    Phi->addIncoming(NullPtr, EntryBB);
+    Phi->addIncoming(AllocateCall, AllocOrInvokeContBB);
+    Storage = Phi;
   }
-
-  EmitBlock(InitBB);
-
-  // Pass the result of the allocation to coro.begin.
-  auto *Phi = Builder.CreatePHI(VoidPtrTy, 2);
-  Phi->addIncoming(NullPtr, EntryBB);
-  Phi->addIncoming(AllocateCall, AllocOrInvokeContBB);
   auto *CoroBegin = Builder.CreateCall(
-      CGM.getIntrinsic(llvm::Intrinsic::coro_begin), {CoroId, Phi});
+      CGM.getIntrinsic(llvm::Intrinsic::coro_begin), {CoroId, Storage});
   CurCoro.Data->CoroBegin = CoroBegin;
   {
     CGDebugInfo *DI = getDebugInfo();
     ParamReferenceReplacerRAII ParamReplacer(LocalDeclMap);
     CodeGenFunction::RunCleanupsScope ResumeScope(*this);
-    EHStack.pushCleanup<CallCoroDelete>(NormalAndEHCleanup, S.getDeallocate());
+    if (NoAlloc)
+      EHStack.pushCleanup<ReleaseNoAllocStorage>(NormalAndEHCleanup, Occupied);
+    else
+      EHStack.pushCleanup<CallCoroDelete>(NormalAndEHCleanup, S.getDeallocate());
 
     // Create mapping between parameters and copy-params for coroutine function.
     llvm::ArrayRef<const Stmt *> ParamMoves = S.getParamMoves();

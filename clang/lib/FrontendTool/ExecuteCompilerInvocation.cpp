@@ -12,7 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Basic/DiagnosticFrontend.h"
+#include "clang/AST/ASTContext.h"
 #include "clang/CodeGen/CodeGenAction.h"
+#include "clang/CodeGen/ModuleBuilder.h"
 #include "clang/Config/config.h"
 #include "clang/ExtractAPI/FrontendActions.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -45,6 +47,31 @@ using namespace clang;
 using namespace llvm::opt;
 
 namespace clang {
+
+namespace {
+class CoroutineLayoutAction final : public WrapperFrontendAction {
+public:
+  explicit CoroutineLayoutAction(std::unique_ptr<FrontendAction> Action)
+      : WrapperFrontendAction(std::move(Action)) {}
+
+  void EndSourceFile() override {
+    WrapperFrontendAction::EndSourceFile();
+    // The wrapped action releases the CI resources; release our per-input
+    // state too so one -cc1 invocation can process several source files.
+    setCompilerInstance(nullptr);
+    setCurrentInput(FrontendInputFile());
+  }
+
+protected:
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
+                                                StringRef InFile) override {
+    if (CI.getLangOpts().Coroutines)
+      CI.getASTContext().setCoroutineFrameLayoutProvider(
+          createCoroutineFrameLayoutProvider(CI));
+    return WrapperFrontendAction::CreateASTConsumer(CI, InFile);
+  }
+};
+} // namespace
 
 static std::unique_ptr<FrontendAction>
 CreateFrontendBaseAction(CompilerInstance &CI) {
@@ -316,6 +343,7 @@ bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
   std::unique_ptr<FrontendAction> Act(CreateFrontendAction(*Clang));
   if (!Act)
     return false;
+  Act = std::make_unique<CoroutineLayoutAction>(std::move(Act));
   bool Success = Clang->ExecuteAction(*Act);
   if (Clang->getFrontendOpts().DisableFree)
     llvm::BuryPointer(std::move(Act));

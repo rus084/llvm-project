@@ -9559,6 +9559,16 @@ attribute, they default to the value ``65535``.
 }];
 }
 
+def CoroNoAllocDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``coro::noalloc`` attribute requires a coroutine to use explicitly supplied
+storage. The compiler never invokes allocation or deallocation functions for
+its frame. The attribute must appear on the first declaration of a free,
+non-template function. Direct calls are forbidden; use ``coro::frame<F>``.
+  }];
+}
+
 def CoroOnlyDestroyWhenCompleteDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{

@@ -14367,4 +14367,19 @@ def err_cuda_device_kernel_launch_not_supported
 def err_cuda_device_kernel_launch_require_rdc
     : Error<"kernel launch from __device__ or __global__ function requires "
             "relocatable device code (i.e. requires -fgpu-rdc)">;
+def err_coro_noalloc_unsupported : Error<
+  "noalloc supports only free non-template functions">;
+def err_coro_noalloc_requires_coroutine : Error<
+  "noalloc attribute requires a coroutine definition">;
+def err_coro_noalloc_late_attr : Error<
+  "noalloc attribute must appear on the first declaration">;
+def err_coro_noalloc_direct_call : Error<
+  "noalloc coroutine must be invoked through coro::frame">;
+def err_coro_noalloc_layout_error : Error<"%0">;
+def err_coro_noalloc_layout_function : Error<
+  "frame layout requires a noalloc coroutine">;
+def err_coro_noalloc_layout_incomplete : Error<
+  "coroutine definition must be visible before querying its frame">;
+def err_coro_noalloc_invoke_count : Error<
+  "incorrect number of arguments to noalloc coroutine">;
 } // end of sema component.

@@ -76,12 +76,13 @@ struct ProbeConsumer final : ASTConsumer {
   bool SawLaterDeclaration = false;
   unsigned ExpectedQueries;
   bool EmitFinalIR;
+  bool NoAlloc;
   std::unique_ptr<EarlyCoroutineLayout> Retained;
 
   ProbeConsumer(const CompilerInstance &CI, std::unique_ptr<CodeGenerator> CG,
-                unsigned ExpectedQueries, bool EmitFinalIR)
+                unsigned ExpectedQueries, bool EmitFinalIR, bool NoAlloc)
       : CI(CI), NormalCG(std::move(CG)), ExpectedQueries(ExpectedQueries),
-        EmitFinalIR(EmitFinalIR) {}
+        EmitFinalIR(EmitFinalIR), NoAlloc(NoAlloc) {}
 
   void Initialize(ASTContext &Ctx) override { NormalCG->Initialize(Ctx); }
 
@@ -114,6 +115,19 @@ struct ProbeConsumer final : ASTConsumer {
           unsigned FrameUsers = 0;
           for (const auto &Fn : *(*Result)->LoweredIR) {
             Definitions += !Fn.isDeclaration();
+            if (NoAlloc) {
+              if (Fn.getName() == "_Z5earlyi") {
+                EXPECT_EQ(Fn.arg_size(), 3u);
+                EXPECT_TRUE(Fn.hasInternalLinkage());
+              }
+              for (const auto &BB : Fn)
+                for (const auto &I : BB)
+                  if (auto *Call = dyn_cast<llvm::CallBase>(&I))
+                    if (auto *Callee = Call->getCalledFunction()) {
+                      EXPECT_FALSE(Callee->getName().starts_with("_Zn"));
+                      EXPECT_FALSE(Callee->getName().starts_with("_Zd"));
+                    }
+            }
             if (Fn.getName() == "_Z5earlyi.resume" ||
                 Fn.getName() == "_Z5earlyi.destroy") {
               ++FrameUsers;
@@ -163,8 +177,14 @@ struct ProbeConsumer final : ASTConsumer {
       ADD_FAILURE() << llvm::toString(Imported.takeError());
       return;
     }
+    if (NoAlloc)
+      (*Imported)->getFunction(Retained->EntryName)
+          ->setLinkage(llvm::GlobalValue::ExternalLinkage);
     EXPECT_FALSE(llvm::Linker::linkModules(*NormalCG->GetModule(),
                                          std::move(*Imported)));
+    if (NoAlloc)
+      NormalCG->GetModule()->getFunction(Retained->EntryName)
+          ->setLinkage(llvm::GlobalValue::InternalLinkage);
     EXPECT_FALSE(llvm::verifyModule(*NormalCG->GetModule(), &llvm::errs()));
     unsigned Ramps = 0;
     for (const auto &Fn : *NormalCG->GetModule())
@@ -174,7 +194,7 @@ struct ProbeConsumer final : ASTConsumer {
 };
 
 void runProbe(llvm::StringRef Target = {}, unsigned ExpectedQueries = 1,
-              bool EmitFinalIR = true) {
+              bool EmitFinalIR = true, bool NoAlloc = false) {
   LangOptions LO;
   LO.CPlusPlus = LO.CPlusPlus11 = LO.CPlusPlus14 = LO.CPlusPlus17 =
       LO.CPlusPlus20 = LO.Coroutines = 1;
@@ -183,9 +203,12 @@ void runProbe(llvm::StringRef Target = {}, unsigned ExpectedQueries = 1,
   auto &PP = Compiler.compiler.getPreprocessor();
   PP.getBuiltinInfo().initializeBuiltins(PP.getIdentifierTable(), LO);
   auto Consumer = std::make_unique<ProbeConsumer>(Compiler.compiler,
-      std::move(Compiler.CG), ExpectedQueries, EmitFinalIR);
+      std::move(Compiler.CG), ExpectedQueries, EmitFinalIR, NoAlloc);
   ProbeConsumer *Probe = Consumer.get();
-  Compiler.init(Program, std::move(Consumer));
+  std::string Source = Program;
+  if (NoAlloc)
+    Source.insert(Source.find("task early(int value)"), "[[coro::noalloc]] ");
+  Compiler.init(Source.c_str(), std::move(Consumer));
   Compiler.compiler.getDiagnosticClient().BeginSourceFile(
       LO, &Compiler.compiler.getPreprocessor());
   ParseAST(Compiler.compiler.getSema(), false, false);
@@ -201,5 +224,9 @@ TEST(NoAllocCoroutineLayout, ThumbLayout) {
   runProbe("thumbv6m-unknown-none-eabi");
 }
 TEST(NoAllocCoroutineLayout, SyntaxOnly) { runProbe({}, 1, false); }
+TEST(NoAllocCoroutineLayout, NoAllocStorage) { runProbe({}, 1, true, true); }
+TEST(NoAllocCoroutineLayout, NoAllocThumbStorage) {
+  runProbe("thumbv6m-unknown-none-eabi", 1, true, true);
+}
 
 } // namespace

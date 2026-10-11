@@ -4984,6 +4984,24 @@ def CoroPromise : CoroLangBuiltin {
   let Prototype = "void*(void*, _Constant int, _Constant bool)";
 }
 
+def CoroInvoke : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_invoke"];
+  let Attributes = [CustomTypeChecking];
+  let Prototype = "void(...)";
+}
+
+def CoroFrameSize : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_frame_size"];
+  let Attributes = [NoThrow, Const, CustomTypeChecking];
+  let Prototype = "size_t(...)";
+}
+
+def CoroFrameAlign : CoroLangBuiltin {
+  let Spellings = ["__builtin_coro_frame_align"];
+  let Attributes = [NoThrow, Const, CustomTypeChecking];
+  let Prototype = "size_t(...)";
+}
+
 def CoroSize : CoroLangBuiltin {
   let Spellings = ["__builtin_coro_size"];
   let Attributes = [NoThrow];

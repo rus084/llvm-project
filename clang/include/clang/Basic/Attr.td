@@ -1353,6 +1353,14 @@ def CFConsumed : InheritableParamAttr {
 }
 
 
+def CoroNoAlloc : InheritableAttr {
+  let Spellings = [CXX11<"coro", "noalloc">];
+  let Subjects = SubjectList<[Function]>;
+  let LangOpts = [CPlusPlus];
+  let Documentation = [CoroNoAllocDocs];
+  let SimpleHandler = 1;
+}
+
 // coro_only_destroy_when_complete indicates the coroutines whose return type
 // is marked by coro_only_destroy_when_complete can only be destroyed when the
 // coroutine completes. Then the space for the destroy functions can be saved.

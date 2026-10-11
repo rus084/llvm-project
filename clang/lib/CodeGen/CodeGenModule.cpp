@@ -6975,6 +6975,10 @@ void CodeGenModule::HandleCXXStaticMemberVarInstantiation(VarDecl *VD) {
 void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
                                                  llvm::GlobalValue *GV) {
   const auto *D = cast<FunctionDecl>(GD.getDecl());
+  if (D->hasAttr<CoroNoAllocAttr>() &&
+      Context.getCoroutineFrameLayoutProvider() &&
+      D->getCanonicalDecl() != EarlyCoroutineLayoutRoot)
+    return;
 
   // Compute the function info and LLVM type.
   const CGFunctionInfo &FI = getTypes().arrangeGlobalDeclaration(GD);
@@ -7006,6 +7010,13 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
   MaybeHandleStaticInExternC(D, Fn);
 
   maybeSetTrivialComdat(*D, *Fn);
+
+  if (D->hasAttr<CoroNoAllocAttr>()) {
+    Fn->setLinkage(llvm::GlobalValue::InternalLinkage);
+    Fn->setVisibility(llvm::GlobalValue::DefaultVisibility);
+    Fn->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+    Fn->setComdat(nullptr);
+  }
 
   if (!tryEmitCUDADeviceInvalidFunctionBody(GD, Fn))
     CodeGenFunction(*this).GenerateCode(GD, Fn, FI);

@@ -19,6 +19,7 @@
 #include "llvm/Support/Error.h"
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace llvm {
   class Constant;
@@ -46,11 +47,13 @@ class LangOptions;
 class PreprocessorOptions;
 class CompilerInstance;
 class FunctionDecl;
+class CoroutineFrameLayoutProvider;
 
 /// Owns a probe's IR and its LLVMContext in the required destruction order.
 struct EarlyCoroutineLayout {
   uint64_t SizeBytes = 0;
   uint64_t AlignBytes = 0;
+  std::string EntryName;
   std::unique_ptr<llvm::LLVMContext> Context;
   std::unique_ptr<llvm::Module> LoweredIR;
 
@@ -60,6 +63,8 @@ struct EarlyCoroutineLayout {
 
 llvm::Expected<std::unique_ptr<EarlyCoroutineLayout>>
 computeEarlyCoroutineLayout(const CompilerInstance &CI, const FunctionDecl &F);
+std::unique_ptr<CoroutineFrameLayoutProvider>
+createCoroutineFrameLayoutProvider(const CompilerInstance &CI);
 
 namespace CodeGen {
   class CodeGenModule;
@@ -142,7 +147,8 @@ public:
 std::unique_ptr<CodeGenerator>
 CreateLLVMCodeGen(const CompilerInstance &CI, llvm::StringRef ModuleName,
                   llvm::LLVMContext &C,
-                  CoverageSourceInfo *CoverageInfo = nullptr);
+                  CoverageSourceInfo *CoverageInfo = nullptr,
+                  bool IsEarlyCoroutineLayout = false);
 
 std::unique_ptr<CodeGenerator>
 CreateLLVMCodeGen(DiagnosticsEngine &Diags, llvm::StringRef ModuleName,
@@ -150,7 +156,8 @@ CreateLLVMCodeGen(DiagnosticsEngine &Diags, llvm::StringRef ModuleName,
                   const HeaderSearchOptions &HeaderSearchOpts,
                   const PreprocessorOptions &PreprocessorOpts,
                   const CodeGenOptions &CGO, llvm::LLVMContext &C,
-                  CoverageSourceInfo *CoverageInfo = nullptr);
+                  CoverageSourceInfo *CoverageInfo = nullptr,
+                  bool IsEarlyCoroutineLayout = false);
 
 namespace CodeGen {
 /// Demangle the artificial function name (\param FuncName) used to encode trap

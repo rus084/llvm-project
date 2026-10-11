@@ -13973,7 +13973,26 @@ TreeTransform<Derived>::TransformCallExpr(CallExpr *E) {
   // Transform arguments.
   bool ArgChanged = false;
   SmallVector<Expr*, 8> Args;
-  if (getDerived().TransformExprs(E->getArgs(), E->getNumArgs(), true, Args,
+  unsigned FirstArgument = 0;
+  unsigned BuiltinID = E->getBuiltinCallee();
+  if (E->getNumArgs() &&
+      (BuiltinID == Builtin::BI__builtin_coro_frame_size ||
+       BuiltinID == Builtin::BI__builtin_coro_frame_align ||
+       BuiltinID == Builtin::BI__builtin_coro_invoke)) {
+    // The first operand identifies a function at compile time. In particular,
+    // substituting a function NTTP here must not expose a runtime pointer.
+    EnterExpressionEvaluationContext FunctionIdentity(
+        getSema(), Sema::ExpressionEvaluationContext::ConstantEvaluated, nullptr,
+        Sema::ExpressionEvaluationContextRecord::EK_TemplateArgument);
+    ExprResult Function = getDerived().TransformExpr(E->getArg(0));
+    if (Function.isInvalid())
+      return ExprError();
+    Args.push_back(Function.get());
+    ArgChanged = Function.get() != E->getArg(0);
+    FirstArgument = 1;
+  }
+  if (getDerived().TransformExprs(E->getArgs() + FirstArgument,
+                                  E->getNumArgs() - FirstArgument, true, Args,
                                   &ArgChanged))
     return ExprError();
 

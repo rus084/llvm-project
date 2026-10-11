@@ -7322,7 +7322,8 @@ ExprResult Sema::CheckTemplateArgument(NamedDecl *Param, QualType ParamType,
   // The initialization of the parameter from the argument is
   // a constant-evaluated context.
   EnterExpressionEvaluationContext ConstantEvaluated(
-      *this, Sema::ExpressionEvaluationContext::ConstantEvaluated);
+      *this, Sema::ExpressionEvaluationContext::ConstantEvaluated, nullptr,
+      Sema::ExpressionEvaluationContextRecord::EK_TemplateArgument);
 
   bool IsConvertedConstantExpression = true;
   if (isa<InitListExpr>(DeductionArg) || ParamType->isRecordType()) {

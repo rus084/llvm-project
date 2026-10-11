@@ -1277,8 +1277,9 @@ bool CoroutineStmtBuilder::buildDependentStatements() {
   assert(!this->IsPromiseDependentType &&
          "coroutine cannot have a dependent promise type");
   this->IsValid = makeOnException() && makeOnFallthrough() &&
-                  makeGroDeclAndReturnStmt() && makeReturnOnAllocFailure() &&
-                  makeNewAndDeleteExpr();
+                  makeGroDeclAndReturnStmt();
+  if (this->IsValid && !FD.hasAttr<CoroNoAllocAttr>())
+    this->IsValid = makeReturnOnAllocFailure() && makeNewAndDeleteExpr();
   return this->IsValid;
 }
 

@@ -896,6 +896,9 @@ public:
   }
 
   ASTContext &getContext() const { return Context; }
+  // An isolated layout run may emit only its selected noalloc coroutine;
+  // references to other noalloc entries resolve when retained modules merge.
+  const FunctionDecl *EarlyCoroutineLayoutRoot = nullptr;
   const LangOptions &getLangOpts() const { return LangOpts; }
   const IntrusiveRefCntPtr<llvm::vfs::FileSystem> &getFileSystem() const {
     return FS;

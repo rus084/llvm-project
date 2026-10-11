@@ -20,13 +20,19 @@
 #include "clang/AST/StmtCXX.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Linker/Linker.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -41,27 +47,84 @@ using namespace CodeGen;
 EarlyCoroutineLayout::EarlyCoroutineLayout() = default;
 EarlyCoroutineLayout::~EarlyCoroutineLayout() = default;
 
+namespace {
+using CoroutineDependencies =
+    SmallVector<std::pair<std::string, GlobalDecl>, 16>;
+
+void collectCoroutineDependencies(CodeGenerator &CG,
+                                  CoroutineDependencies &Dependencies) {
+  if (!CG.GetModule())
+    return;
+  for (auto &GV : CG.GetModule()->global_values()) {
+    GlobalDecl GD;
+    if (!CG.CGM().lookupRepresentativeDecl(GV.getName(), GD))
+      continue;
+    if (auto *FD = dyn_cast<FunctionDecl>(GD.getDecl())) {
+      if (!FD->hasAttr<CoroNoAllocAttr>())
+        Dependencies.emplace_back(GV.getName().str(), GD);
+    } else if (auto *VD = dyn_cast<VarDecl>(GD.getDecl())) {
+      if (VD->isFileVarDecl() || VD->isStaticLocal())
+        Dependencies.emplace_back(GV.getName().str(), GD);
+      if (VD->isStaticLocal())
+        if (auto *Guard = CG.CGM().getStaticLocalDeclGuardAddress(VD))
+          Dependencies.emplace_back(Guard->getName().str(), GD);
+    }
+  }
+}
+
 llvm::Expected<std::unique_ptr<EarlyCoroutineLayout>>
-clang::computeEarlyCoroutineLayout(const CompilerInstance &CI,
-                                  const FunctionDecl &F) {
+computeEarlyCoroutineLayoutImpl(const CompilerInstance &CI,
+                                const FunctionDecl &F,
+                                CoroutineDependencies *Dependencies) {
+  if (F.isInvalidDecl())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "coroutine definition contains errors");
   if (!F.doesThisDeclarationHaveABody() ||
-      !isa<CoroutineBodyStmt>(F.getBody()))
+      !isa_and_nonnull<CoroutineBodyStmt>(F.getBody()))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "a completed coroutine definition is required");
 
   auto Result = std::make_unique<EarlyCoroutineLayout>();
   Result->Context = std::make_unique<llvm::LLVMContext>();
-  auto CG = CreateLLVMCodeGen(CI, "early-coroutine-layout", *Result->Context);
+  // A layout query is independent of earlier, recoverable Sema errors (and
+  // of diagnostics from a previous input in the same frontend invocation).
+  auto &MainDiags = CI.getDiagnostics();
+  DiagnosticsEngine LayoutDiags(MainDiags.getDiagnosticIDs(),
+                                MainDiags.getDiagnosticOptions(),
+                                MainDiags.getClient(), /*ShouldOwnClient=*/false);
+  LayoutDiags.setSourceManager(&CI.getSourceManager());
+  auto CG = CreateLLVMCodeGen(
+      LayoutDiags, "early-coroutine-layout", CI.getVirtualFileSystemPtr(),
+      CI.getHeaderSearchOpts(), CI.getPreprocessorOpts(), CI.getCodeGenOpts(),
+      *Result->Context, nullptr, /*IsEarlyCoroutineLayout=*/true);
   CG->Initialize(CI.getASTContext());
+  CG->CGM().EarlyCoroutineLayoutRoot = F.getCanonicalDecl();
   std::string Name = CG->GetMangledName(GlobalDecl(&F)).str();
+  Result->EntryName = Name;
   CG->HandleTopLevelDecl(DeclGroupRef(const_cast<FunctionDecl *>(&F)));
   CG->GetAddrOfGlobal(GlobalDecl(&F), /*isForDefinition=*/true);
   CG->HandleTranslationUnit(CI.getASTContext());
+  if (Dependencies)
+    collectCoroutineDependencies(*CG, *Dependencies);
   Result->LoweredIR = CG->ReleaseModule();
   CG.reset();
   if (!Result->LoweredIR)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "early coroutine IR generation failed");
+
+  auto *Entry = Result->LoweredIR->getFunction(Name);
+  for (auto &Block : *Entry)
+    for (auto &Instruction : Block)
+      if (auto *Alloca = llvm::dyn_cast<llvm::AllocaInst>(&Instruction))
+        if (!Alloca->isStaticAlloca())
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "dynamic stack allocation is unsupported in a noalloc coroutine");
+
+  // CGSCC traversal starts at externally reachable functions. The isolated
+  // entry has no caller yet, but still needs its mandatory coroutine lowering.
+  auto EntryLinkage = Entry->getLinkage();
+  Entry->setLinkage(llvm::GlobalValue::ExternalLinkage);
 
   // Capture the layout from the same ABI implementation which outlines the
   // retained resume/destroy functions. No independent estimate or second
@@ -98,7 +161,8 @@ clang::computeEarlyCoroutineLayout(const CompilerInstance &CI,
   llvm::FunctionAnalysisManager FAM;
   llvm::CGSCCAnalysisManager CGAM;
   llvm::ModuleAnalysisManager MAM;
-  llvm::PassBuilder PB;
+  llvm::PassBuilder PB(nullptr, llvm::PipelineTuningOptions(), std::nullopt,
+                        nullptr, CI.getVirtualFileSystemPtr());
   PB.registerLoopAnalyses(LAM);
   PB.registerFunctionAnalyses(FAM);
   PB.registerCGSCCAnalyses(CGAM);
@@ -109,6 +173,7 @@ clang::computeEarlyCoroutineLayout(const CompilerInstance &CI,
   MPM.addPass(llvm::createModuleToPostOrderCGSCCPassAdaptor(std::move(Split)));
   MPM.addPass(llvm::CoroCleanupPass());
   MPM.run(*Result->LoweredIR, MAM);
+  Entry->setLinkage(EntryLinkage);
 
   if (!Result->SizeBytes || !Result->AlignBytes)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -121,6 +186,174 @@ clang::computeEarlyCoroutineLayout(const CompilerInstance &CI,
                                    Errors.c_str());
   return Result;
 }
+} // namespace
+
+llvm::Expected<std::unique_ptr<EarlyCoroutineLayout>>
+clang::computeEarlyCoroutineLayout(const CompilerInstance &CI,
+                                  const FunctionDecl &F) {
+  return computeEarlyCoroutineLayoutImpl(CI, F, nullptr);
+}
+
+namespace {
+class CoroutineLayoutProvider final : public CoroutineFrameLayoutProvider {
+  const CompilerInstance &CI;
+  struct Entry {
+    enum { Computing, Complete, Failed } State = Computing;
+    std::unique_ptr<EarlyCoroutineLayout> Layout;
+    CoroutineDependencies Dependencies;
+    std::string Error;
+  };
+  llvm::MapVector<const FunctionDecl *, std::unique_ptr<Entry>> Entries;
+
+public:
+  explicit CoroutineLayoutProvider(const CompilerInstance &CI) : CI(CI) {}
+
+  llvm::Expected<CoroutineFrameLayout>
+  getLayout(const FunctionDecl *F) override {
+    if (CI.getLangOpts().CompilingPCH ||
+        CI.getLangOpts().getCompilingModule() != LangOptions::CMK_None ||
+        F->getOwningModule() != nullptr ||
+        !CI.getPreprocessorOpts().ImplicitPCHInclude.empty() ||
+        CI.getASTContext().TUKind != TU_Complete)
+      return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                     "noalloc frame layout does not support PCH or modules");
+    const FunctionDecl *Key = F->getCanonicalDecl();
+    auto It = Entries.find(Key);
+    if (It != Entries.end()) {
+      Entry &E = *It->second;
+      if (E.State == Entry::Computing)
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "recursive coroutine frame layout dependency");
+      if (E.State == Entry::Failed)
+        return llvm::createStringError(llvm::inconvertibleErrorCode(), E.Error);
+      return CoroutineFrameLayout{E.Layout->SizeBytes, E.Layout->AlignBytes};
+    }
+    auto NewEntry = std::make_unique<Entry>();
+    Entry &E = *NewEntry;
+    Entries.insert({Key, std::move(NewEntry)});
+    auto Result = computeEarlyCoroutineLayoutImpl(CI, *F, &E.Dependencies);
+    if (!Result) {
+      E.Error = llvm::toString(Result.takeError());
+      E.State = Entry::Failed;
+      return llvm::createStringError(llvm::inconvertibleErrorCode(), E.Error);
+    }
+    E.Layout = std::move(*Result);
+    E.State = Entry::Complete;
+    return CoroutineFrameLayout{E.Layout->SizeBytes, E.Layout->AlignBytes};
+  }
+
+  llvm::Error importInto(llvm::Module &M) override {
+    llvm::MapVector<std::string, GlobalDecl, llvm::StringMap<unsigned>>
+        Dependencies;
+    for (auto &Pair : Entries)
+      if (Pair.second->State == Entry::Complete)
+        for (auto &Dependency : Pair.second->Dependencies)
+          Dependencies.insert(Dependency);
+
+    // A static source symbol must keep its identity across isolated modules.
+    // Give referenced definitions linkable names only while combining IR.
+    llvm::StringMap<llvm::GlobalValue::LinkageTypes> LocalLinkages;
+    auto MakeLinkable = [&](llvm::Module &Module) {
+      for (auto &Dependency : Dependencies)
+        if (auto *GV = Module.getNamedValue(Dependency.first))
+          if (GV->hasLocalLinkage()) {
+            LocalLinkages.try_emplace(Dependency.first, GV->getLinkage());
+            // Ordinary inline members and their local statics can already be
+            // defined in several isolated modules. Merge their source identity
+            // as well as declarations, then restore the original local linkage.
+            GV->setLinkage(GV->isDeclaration()
+                               ? llvm::GlobalValue::ExternalLinkage
+                               : llvm::GlobalValue::LinkOnceODRLinkage);
+          }
+    };
+    auto Link = [&](std::unique_ptr<llvm::Module> Source) -> llvm::Error {
+      MakeLinkable(M);
+      MakeLinkable(*Source);
+      if (llvm::Linker::linkModules(M, std::move(Source)))
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "cannot import retained coroutine IR");
+      return llvm::Error::success();
+    };
+
+    for (auto &Pair : Entries) {
+      Entry &E = *Pair.second;
+      if (E.State != Entry::Complete)
+        continue;
+      llvm::SmallVector<char, 0> Bytes;
+      llvm::raw_svector_ostream OS(Bytes);
+      llvm::WriteBitcodeToFile(*E.Layout->LoweredIR, OS);
+      auto Imported = llvm::parseBitcodeFile(
+          llvm::MemoryBufferRef(llvm::StringRef(Bytes.data(), Bytes.size()),
+                                "noalloc-coroutine"), M.getContext());
+      if (!Imported)
+        return Imported.takeError();
+      // Resolve cross-coroutine references during linking, then make all entry
+      // definitions private once the modules have been combined.
+      if (auto *F = (*Imported)->getFunction(E.Layout->EntryName))
+        F->setLinkage(llvm::GlobalValue::ExternalLinkage);
+      if (auto Error = Link(std::move(*Imported)))
+        return Error;
+    }
+
+    // Function-template helpers may acquire their bodies only at the end of
+    // the TU. Emit missing ordinary dependencies now, never the noalloc body
+    // whose retained representation already defines the frame layout.
+    size_t NextDependency = 0;
+    CodeGenOptions DependencyOptions = CI.getCodeGenOpts();
+    // Complete/base structor replacement normally rewrites the owning module.
+    // Retained callers live in another module, so emit both requested variants.
+    DependencyOptions.CXXCtorDtorAliases = false;
+    while (NextDependency != Dependencies.size()) {
+      auto CG = CreateLLVMCodeGen(
+          CI.getDiagnostics(), "noalloc-dependencies",
+          CI.getVirtualFileSystemPtr(), CI.getHeaderSearchOpts(),
+          CI.getPreprocessorOpts(), DependencyOptions, M.getContext(), nullptr,
+          /*IsEarlyCoroutineLayout=*/true);
+      CG->Initialize(CI.getASTContext());
+      while (NextDependency != Dependencies.size()) {
+        auto Dependency = Dependencies.begin()[NextDependency++];
+        if (auto *GV = M.getNamedValue(Dependency.first))
+          if (!GV->isDeclaration())
+            continue;
+        GlobalDecl GD = Dependency.second;
+        const Decl *Definition = nullptr;
+        if (auto *FD = dyn_cast<FunctionDecl>(GD.getDecl()))
+          Definition = FD->getDefinition();
+        else if (auto *VD = dyn_cast<VarDecl>(GD.getDecl()))
+          Definition = VD->getDefinition();
+        if (!Definition)
+          continue;
+        GD = GD.getWithDecl(Definition);
+        CG->HandleTopLevelDecl(DeclGroupRef(const_cast<Decl *>(Definition)));
+        CG->GetAddrOfGlobal(GD, /*isForDefinition=*/true);
+      }
+      CG->HandleTranslationUnit(CI.getASTContext());
+      if (!CG->GetModule())
+        return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                       "coroutine dependency IR generation failed");
+      CoroutineDependencies More;
+      collectCoroutineDependencies(*CG, More);
+      for (auto &Dependency : More)
+        Dependencies.insert(Dependency);
+      if (auto Error = Link(CG->ReleaseModule()))
+        return Error;
+    }
+    for (auto &Local : LocalLinkages)
+      if (auto *GV = M.getNamedValue(Local.getKey()))
+        GV->setLinkage(Local.getValue());
+    for (auto &Pair : Entries)
+      if (Pair.second->State == Entry::Complete)
+        if (auto *F = M.getFunction(Pair.second->Layout->EntryName))
+          F->setLinkage(llvm::GlobalValue::InternalLinkage);
+    return llvm::Error::success();
+  }
+};
+} // namespace
+
+std::unique_ptr<CoroutineFrameLayoutProvider>
+clang::createCoroutineFrameLayoutProvider(const CompilerInstance &CI) {
+  return std::make_unique<CoroutineLayoutProvider>(CI);
+}
 
 namespace {
   class CodeGeneratorImpl final : public CodeGenerator {
@@ -130,6 +363,7 @@ namespace {
     const HeaderSearchOptions &HeaderSearchOpts; // Only used for debug info.
     const PreprocessorOptions &PreprocessorOpts; // Only used for debug info.
     const CodeGenOptions &CodeGenOpts;
+    bool IsEarlyCoroutineLayout;
 
     unsigned HandlingTopLevelDecls;
 
@@ -169,9 +403,11 @@ namespace {
                       const HeaderSearchOptions &HSO,
                       const PreprocessorOptions &PPO, const CodeGenOptions &CGO,
                       llvm::LLVMContext &C,
-                      CoverageSourceInfo *CoverageInfo = nullptr)
+                      CoverageSourceInfo *CoverageInfo = nullptr,
+                      bool IsEarlyCoroutineLayout = false)
         : Diags(diags), Ctx(nullptr), FS(std::move(FS)), HeaderSearchOpts(HSO),
-          PreprocessorOpts(PPO), CodeGenOpts(CGO), HandlingTopLevelDecls(0),
+          PreprocessorOpts(PPO), CodeGenOpts(CGO),
+          IsEarlyCoroutineLayout(IsEarlyCoroutineLayout), HandlingTopLevelDecls(0),
           CoverageInfo(CoverageInfo),
           M(new llvm::Module(ExpandModuleName(ModuleName, CGO), C)) {
       C.setDiscardValueNames(CGO.DiscardValueNames);
@@ -287,8 +523,13 @@ namespace {
       HandlingTopLevelDeclRAII HandlingDecl(*this);
 
       // Make sure to emit all elements of a Decl.
-      for (auto &I : DG)
+      for (auto &I : DG) {
+        if (!IsEarlyCoroutineLayout && Ctx->getCoroutineFrameLayoutProvider())
+          if (auto *F = dyn_cast<FunctionDecl>(I))
+            if (F->hasAttr<CoroNoAllocAttr>())
+              continue;
         Builder->EmitTopLevelDecl(I);
+      }
 
       return true;
     }
@@ -404,6 +645,12 @@ namespace {
       if (!Diags.hasUnrecoverableErrorOccurred() && Builder)
         Builder->Release();
 
+      if (!IsEarlyCoroutineLayout && M && !Diags.hasErrorOccurred())
+        if (auto *Provider = Ctx.getCoroutineFrameLayoutProvider())
+          if (auto Error = Provider->importInto(*M))
+            Diags.Report(diag::err_fe_error_backend)
+                << llvm::toString(std::move(Error));
+
       // If there are errors before or when releasing the Builder, reset
       // the module to stop here before invoking the backend.
       if (Diags.hasErrorOccurred()) {
@@ -490,20 +737,24 @@ clang::CreateLLVMCodeGen(DiagnosticsEngine &Diags, llvm::StringRef ModuleName,
                          const HeaderSearchOptions &HeaderSearchOpts,
                          const PreprocessorOptions &PreprocessorOpts,
                          const CodeGenOptions &CGO, llvm::LLVMContext &C,
-                         CoverageSourceInfo *CoverageInfo) {
+                         CoverageSourceInfo *CoverageInfo,
+                         bool IsEarlyCoroutineLayout) {
   return std::make_unique<CodeGeneratorImpl>(Diags, ModuleName, std::move(FS),
                                              HeaderSearchOpts, PreprocessorOpts,
-                                             CGO, C, CoverageInfo);
+                                             CGO, C, CoverageInfo,
+                                             IsEarlyCoroutineLayout);
 }
 
 std::unique_ptr<CodeGenerator>
 clang::CreateLLVMCodeGen(const CompilerInstance &CI, StringRef ModuleName,
                          llvm::LLVMContext &C,
-                         CoverageSourceInfo *CoverageInfo) {
+                         CoverageSourceInfo *CoverageInfo,
+                         bool IsEarlyCoroutineLayout) {
   return CreateLLVMCodeGen(CI.getDiagnostics(), ModuleName,
                            CI.getVirtualFileSystemPtr(),
                            CI.getHeaderSearchOpts(), CI.getPreprocessorOpts(),
-                           CI.getCodeGenOpts(), C, CoverageInfo);
+                           CI.getCodeGenOpts(), C, CoverageInfo,
+                           IsEarlyCoroutineLayout);
 }
 
 namespace clang {

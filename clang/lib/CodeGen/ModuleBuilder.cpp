@@ -17,6 +17,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/TargetInfo.h"
@@ -25,12 +26,101 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Transforms/Coroutines/CoroCleanup.h"
+#include "llvm/Transforms/Coroutines/CoroEarly.h"
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include <memory>
 
 using namespace clang;
 using namespace CodeGen;
+
+EarlyCoroutineLayout::EarlyCoroutineLayout() = default;
+EarlyCoroutineLayout::~EarlyCoroutineLayout() = default;
+
+llvm::Expected<std::unique_ptr<EarlyCoroutineLayout>>
+clang::computeEarlyCoroutineLayout(const CompilerInstance &CI,
+                                  const FunctionDecl &F) {
+  if (!F.doesThisDeclarationHaveABody() ||
+      !isa<CoroutineBodyStmt>(F.getBody()))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "a completed coroutine definition is required");
+
+  auto Result = std::make_unique<EarlyCoroutineLayout>();
+  Result->Context = std::make_unique<llvm::LLVMContext>();
+  auto CG = CreateLLVMCodeGen(CI, "early-coroutine-layout", *Result->Context);
+  CG->Initialize(CI.getASTContext());
+  std::string Name = CG->GetMangledName(GlobalDecl(&F)).str();
+  CG->HandleTopLevelDecl(DeclGroupRef(const_cast<FunctionDecl *>(&F)));
+  CG->GetAddrOfGlobal(GlobalDecl(&F), /*isForDefinition=*/true);
+  CG->HandleTranslationUnit(CI.getASTContext());
+  Result->LoweredIR = CG->ReleaseModule();
+  CG.reset();
+  if (!Result->LoweredIR)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "early coroutine IR generation failed");
+
+  // Capture the layout from the same ABI implementation which outlines the
+  // retained resume/destroy functions. No independent estimate or second
+  // final-emission layout calculation is involved.
+  class LayoutABI final : public llvm::coro::SwitchABI {
+    EarlyCoroutineLayout &Result;
+
+  public:
+    LayoutABI(llvm::Function &F, llvm::coro::Shape &Shape,
+              EarlyCoroutineLayout &Result)
+        : SwitchABI(F, Shape, llvm::coro::isTriviallyMaterializable),
+          Result(Result) {}
+
+    void buildCoroutineFrame(bool OptimizeFrame) override {
+      SwitchABI::buildCoroutineFrame(/*OptimizeFrame=*/false);
+      Result.SizeBytes = Shape.FrameSize;
+      Result.AlignBytes = Shape.FrameAlign.value();
+    }
+  };
+
+  llvm::CoroSplitPass Split(/*OptimizeFrame=*/false);
+  auto DefaultABI = Split.CreateAndInitABI;
+  Split.CreateAndInitABI =
+      [&](llvm::Function &Fn, llvm::coro::Shape &Shape)
+          -> std::unique_ptr<llvm::coro::BaseABI> {
+    if (Fn.getName() != Name)
+      return DefaultABI(Fn, Shape);
+    auto ABI = std::make_unique<LayoutABI>(Fn, Shape, *Result);
+    ABI->init();
+    return ABI;
+  };
+
+  llvm::LoopAnalysisManager LAM;
+  llvm::FunctionAnalysisManager FAM;
+  llvm::CGSCCAnalysisManager CGAM;
+  llvm::ModuleAnalysisManager MAM;
+  llvm::PassBuilder PB;
+  PB.registerLoopAnalyses(LAM);
+  PB.registerFunctionAnalyses(FAM);
+  PB.registerCGSCCAnalyses(CGAM);
+  PB.registerModuleAnalyses(MAM);
+  PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+  llvm::ModulePassManager MPM;
+  MPM.addPass(llvm::CoroEarlyPass());
+  MPM.addPass(llvm::createModuleToPostOrderCGSCCPassAdaptor(std::move(Split)));
+  MPM.addPass(llvm::CoroCleanupPass());
+  MPM.run(*Result->LoweredIR, MAM);
+
+  if (!Result->SizeBytes || !Result->AlignBytes)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "coroutine splitter did not produce a layout");
+  std::string Errors;
+  llvm::raw_string_ostream OS(Errors);
+  if (llvm::verifyModule(*Result->LoweredIR, &OS))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "invalid early coroutine IR: %s",
+                                   Errors.c_str());
+  return Result;
+}
 
 namespace {
   class CodeGeneratorImpl final : public CodeGenerator {

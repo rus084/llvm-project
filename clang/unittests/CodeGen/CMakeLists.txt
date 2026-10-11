@@ -1,3 +1,24 @@
+add_distinct_clang_unittest(NoAllocCoroutineLayoutTests
+  PARTIAL_SOURCES_INTENDED
+  NoAllocCoroutineLayoutTest.cpp
+  CLANG_LIBS
+  clangAST
+  clangBasic
+  clangCodeGen
+  clangFrontend
+  clangLex
+  clangParse
+  clangSema
+  clangSerialization
+  LLVM_COMPONENTS
+  BitReader
+  BitWriter
+  Core
+  Linker
+  Support
+  TargetParser
+  )
+
 add_clang_unittest(ClangCodeGenTests
   BufferSourceTest.cpp
   CodeGenExternalTest.cpp

@@ -16,6 +16,9 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+#include <cstdint>
+#include <memory>
 
 namespace llvm {
   class Constant;
@@ -42,6 +45,21 @@ class HeaderSearchOptions;
 class LangOptions;
 class PreprocessorOptions;
 class CompilerInstance;
+class FunctionDecl;
+
+/// Owns a probe's IR and its LLVMContext in the required destruction order.
+struct EarlyCoroutineLayout {
+  uint64_t SizeBytes = 0;
+  uint64_t AlignBytes = 0;
+  std::unique_ptr<llvm::LLVMContext> Context;
+  std::unique_ptr<llvm::Module> LoweredIR;
+
+  EarlyCoroutineLayout();
+  ~EarlyCoroutineLayout();
+};
+
+llvm::Expected<std::unique_ptr<EarlyCoroutineLayout>>
+computeEarlyCoroutineLayout(const CompilerInstance &CI, const FunctionDecl &F);
 
 namespace CodeGen {
   class CodeGenModule;
